@@ -24,7 +24,11 @@ public with sharing class RecordContextController {
             // Get related records
             Map<String, Object> relatedRecords = getRelatedRecords(recordId, objectApiName);
             result.put('relatedRecords', relatedRecords);
-            
+            System.debug('Related records: ' + relatedRecords);
+            System.debug('Record fields: ' + recordFields);
+            System.debug('Object API Name: ' + objectApiName);
+            System.debug('Record ID: ' + recordId);
+            System.debug('Result: ' + result);
             return result;
         } catch (Exception e) {
             throw new AuraHandledException('Error retrieving record context: ' + e.getMessage());
