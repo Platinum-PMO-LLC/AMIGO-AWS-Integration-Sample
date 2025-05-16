@@ -43,7 +43,7 @@ public with sharing class RecordContextController {
             
             // Here you would typically call an external API or service with the prompt and context
             // For demo purposes, we'll return a simulated response
-            String response = generateSimulatedResponse(prompt, recordContext);
+            String response = getResponseBody(prompt, recordContext);
 
             System.debug('Simulated response: ' + JSON.serializePretty(response));
             
@@ -217,39 +217,38 @@ public with sharing class RecordContextController {
         
         return relatedRecordsMap;
     }
+    private static final String ENDPOINT = 'https://ykb08pmg3l.execute-api.ap-south-1.amazonaws.com/default/SF-context-data';
+    public static HttpResponse callLambdaFunction(String prompt, Map<String, Object> recordContext) {
+        // Create HTTP request
+        HttpRequest request = new HttpRequest();
+        request.setEndpoint(ENDPOINT);
+        request.setMethod('POST');
+        request.setHeader('Content-Type', 'application/json');
+        
+        // Create request body
+        Map<String, Object> requestBody = new Map<String, Object>();
+        requestBody.put('prompt', prompt);
+        requestBody.put('recordContext', recordContext);
+        
+        // Set request body
+        request.setBody(JSON.serialize(requestBody));
+        
+        // Send the request
+        Http http = new Http();
+        HttpResponse response;
+        
+        try {
+            response = http.send(request);
+            return response;
+        } catch (Exception e) {
+            System.debug('Error calling AWS Lambda: ' + e.getMessage());
+            throw e;
+        }
+    }
     
-    /**
-     * Generate a simulated response for demo purposes
-     * In a real implementation, this would call an external API
-     */
-    private static String generateSimulatedResponse(String prompt, Map<String, Object> recordContext) {
-        String objectApiName = (String)recordContext.get('objectApiName');
-        Map<String, Object> record = (Map<String, Object>)recordContext.get('record');
-        Map<String, Object> relatedRecords = (Map<String, Object>)recordContext.get('relatedRecords');
-        
-        // Build a response that shows we're using the context
-        String response = '<h2>Response to your prompt:</h2>';
-        response += '<p><strong>Your prompt:</strong> ' + prompt + '</p>';
-        response += '<p><strong>Object Type:</strong> ' + objectApiName + '</p>';
-        
-        if (record.containsKey('Name')) {
-            response += '<p><strong>Record Name:</strong> ' + record.get('Name') + '</p>';
-        }
-        
-        // Add some information about related records
-        response += '<h3>Related Records Summary:</h3><ul>';
-        for (String relatedObject : relatedRecords.keySet()) {
-            List<Map<String, Object>> records = (List<Map<String, Object>>)relatedRecords.get(relatedObject);
-            response += '<li>' + relatedObject + ': ' + records.size() + ' records</li>';
-        }
-        response += '</ul>';
-        
-        // Add a simulated analysis
-        response += '<h3>Analysis:</h3>';
-        response += '<p>Based on the context of this ' + objectApiName + ' record and your prompt, ';
-        response += 'here is a simulated response that demonstrates how the component would work with ';
-        response += 'an actual integration to an AI service or other external API.</p>';
-        
-        return response;
+    // If you need to get the response body as a String
+    public static String getResponseBody(String prompt, Map<String, Object> recordContext) {
+        HttpResponse response = callLambdaFunction(prompt, recordContext);
+        return response.getBody();
     }
 }
