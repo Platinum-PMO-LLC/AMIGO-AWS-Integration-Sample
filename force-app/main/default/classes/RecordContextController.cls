@@ -1,9 +1,4 @@
 public with sharing class RecordContextController {
-    /**
-     * Get comprehensive record data including related records
-     * @param recordId The ID of the record to retrieve
-     * @return Map containing record data and related records
-     */
     @AuraEnabled
     public static Map<String, Object> getRecordContext(String recordId) {
         if (String.isBlank(recordId)) {
@@ -21,26 +16,21 @@ public with sharing class RecordContextController {
             Map<String, Object> recordFields = getRecordFields(recordId, objectApiName);
             result.put('record', recordFields);
             
-            // Get related records
+            // Get related records using our improved method
             Map<String, Object> relatedRecords = getRelatedRecords(recordId, objectApiName);
             result.put('relatedRecords', relatedRecords);
-            System.debug('Related records: ' + relatedRecords);
-            System.debug('Record fields: ' + recordFields);
-            System.debug('Object API Name: ' + objectApiName);
-            System.debug('Record ID: ' + recordId);
-            System.debug('Result: ' + result);
+            
+            // Add a summary for debugging
+            Integer relatedObjectCount = relatedRecords.size();
+            List<String> relatedObjectNames = new List<String>(relatedRecords.keySet());
+            System.debug(JSON.serializePretty(result));
+            
             return result;
         } catch (Exception e) {
+            System.debug(LoggingLevel.ERROR, 'Error in getRecordContext: ' + e.getMessage() + '\n' + e.getStackTraceString());
             throw new AuraHandledException('Error retrieving record context: ' + e.getMessage());
         }
     }
-    
-    /**
-     * Process the user prompt with record context
-     * @param recordId The ID of the record
-     * @param prompt The user's prompt text
-     * @return Processed response
-     */
     @AuraEnabled
     public static String processPrompt(String recordId, String prompt) {
         if (String.isBlank(recordId) || String.isBlank(prompt)) {
@@ -54,6 +44,8 @@ public with sharing class RecordContextController {
             // Here you would typically call an external API or service with the prompt and context
             // For demo purposes, we'll return a simulated response
             String response = generateSimulatedResponse(prompt, recordContext);
+
+            System.debug('Simulated response: ' + JSON.serializePretty(response));
             
             return response;
         } catch (Exception e) {
@@ -117,7 +109,7 @@ public with sharing class RecordContextController {
     /**
      * Get related records
      */
-    private static Map<String, Object> getRelatedRecords(String recordId, String objectApiName) {
+    public static Map<String, Object> getRelatedRecords(String recordId, String objectApiName) {
         if (String.isBlank(recordId) || String.isBlank(objectApiName)) return new Map<String, Object>();
         
         Map<String, Object> relatedRecordsMap = new Map<String, Object>();
@@ -132,26 +124,73 @@ public with sharing class RecordContextController {
         Integer relationshipLimit = 5;
         Integer currentCount = 0;
         
+        // Maintain a set of known problematic objects or relationship fields
+        Set<String> nonQueryableObjects = new Set<String>{
+            'OutgoingEmail', 'EmailMessage', 'ContentDocumentLink'
+        };
+        
+        Set<String> nonFilterableFields = new Set<String>{
+            'RelatedToId', 'LinkedEntityId'
+        };
+        
         for (Schema.ChildRelationship relationship : childRelationships) {
             if (currentCount >= relationshipLimit) break;
             
             Schema.DescribeSObjectResult childObjectDescribe = relationship.getChildSObject().getDescribe();
+            String childObjectName = childObjectDescribe.getName();
+            String relationshipField = relationship.getField().getDescribe().getName();
             
-            // Skip certain system objects
-            if (childObjectDescribe.getName().startsWith('History') || 
-                childObjectDescribe.getName().startsWith('Share') ||
-                !childObjectDescribe.isAccessible()) {
+            // Skip certain system objects and objects that don't support queries
+            if (childObjectName.endsWith('ChangeEvent') || 
+                childObjectName.startsWith('History') || 
+                childObjectName.startsWith('Share') ||
+                !childObjectDescribe.isAccessible() ||
+                !childObjectDescribe.isQueryable() ||
+                nonQueryableObjects.contains(childObjectName) ||
+                nonFilterableFields.contains(relationshipField)) {
+                
+                // System.debug('Skipping relationship ' + childObjectName + '.' + relationshipField + 
+                            //  ' - Object may not support querying or field may not be filterable');
                 continue;
             }
             
             // Get related records
-            String relatedListName = childObjectDescribe.getName();
-            String relationshipField = relationship.getField().getDescribe().getName();
+            String relatedListName = childObjectName;
             
             try {
+                // Get the field map for this object
+                Map<String, Schema.SObjectField> fieldMap = childObjectDescribe.fields.getMap();
+                
+                // Check if the relationship field is filterable
+                if (!fieldMap.get(relationshipField).getDescribe().isFilterable()) {
+                    System.debug('Skipping relationship ' + childObjectName + '.' + relationshipField + 
+                                ' - Field is not filterable');
+                    continue;
+                }
+                
+                // Determine which fields to query
+                List<String> fieldsToQuery = new List<String>{'Id'};
+                
+                // Check if Name field exists and add it if it does
+                if (fieldMap.containsKey('Name')) {
+                    fieldsToQuery.add('Name');
+                } else {
+                    // Look for alternative display fields
+                    for (String potentialField : new List<String>{
+                        'Subject', 'Title', 'CaseNumber', 'OrderNumber', 'TaskSubject',
+                        'Description', 'LineItemNumber', 'ApprovalName'
+                    }) {
+                        if (fieldMap.containsKey(potentialField)) {
+                            fieldsToQuery.add(potentialField);
+                            break;
+                        }
+                    }
+                }
+                
                 // Build dynamic SOQL for child records
-                String childSoql = 'SELECT Id, Name FROM ' + relatedListName + 
-                                  ' WHERE ' + relationshipField + ' = :recordId LIMIT 100';
+                String childSoql = 'SELECT ' + String.join(fieldsToQuery, ',') + 
+                                ' FROM ' + relatedListName + 
+                                ' WHERE ' + relationshipField + ' = :recordId LIMIT 100';
                 
                 List<SObject> relatedRecords = Database.query(childSoql);
                 
@@ -168,9 +207,10 @@ public with sharing class RecordContextController {
                     
                     relatedRecordsMap.put(relatedListName, recordsList);
                     currentCount++;
+                    System.debug('Successfully queried ' + relatedRecords.size() + ' ' + relatedListName + ' records');
                 }
             } catch (Exception e) {
-                // Skip this relationship if there's an error
+                // Skip this relationship if there's an error, but log it for debugging
                 System.debug('Error querying related records for ' + relatedListName + ': ' + e.getMessage());
             }
         }

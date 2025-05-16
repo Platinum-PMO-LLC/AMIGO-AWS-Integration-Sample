@@ -1,0 +1,52 @@
+<!-- recordContextPrompt.html -->
+<template>
+    <lightning-card title="Record Context Prompt" icon-name="utility:einstein">
+        <div class="slds-p-horizontal_medium">
+            <div class="slds-form-element">
+                <label class="slds-form-element__label" for="prompt-textarea">Enter your prompt</label>
+                <div class="slds-form-element__control">
+                    <lightning-textarea 
+                        id="prompt-textarea"
+                        value={prompt}
+                        onchange={handlePromptChange}
+                        placeholder="Type your prompt here..."
+                        class="slds-m-bottom_medium">
+                    </lightning-textarea>
+                </div>
+            </div>
+            
+            <div class="slds-grid slds-grid_align-end">
+                <lightning-button 
+                    label="Send" 
+                    onclick={handleSendPrompt} 
+                    variant="brand"
+                    disabled={isProcessing}
+                    class="slds-m-top_small">
+                </lightning-button>
+            </div>
+            
+            <div if:true={isProcessing} class="slds-p-top_medium slds-align_absolute-center">
+                <lightning-spinner alternative-text="Processing..." size="small"></lightning-spinner>
+                <span class="slds-p-left_small">Processing your request...</span>
+            </div>
+            
+            <div if:true={showResponse} class="slds-p-top_medium">
+                <div class="slds-box slds-theme_shade">
+                    <lightning-formatted-rich-text value={response}></lightning-formatted-rich-text>
+                </div>
+            </div>
+            
+            <div if:true={error} class="slds-p-top_medium">
+                <div class="slds-notify slds-notify_alert slds-alert_error" role="alert">
+                    <span class="slds-assistive-text">Error</span>
+                    <h2>{error}</h2>
+                </div>
+            </div>
+        </div>
+        <div slot="footer">
+            <p class="slds-text-align_center slds-text-body_small">
+                Uses record context to process prompts.
+            </p>
+        </div>
+    </lightning-card>
+</template>
