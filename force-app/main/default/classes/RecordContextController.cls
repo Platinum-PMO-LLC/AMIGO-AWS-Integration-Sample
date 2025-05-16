@@ -231,6 +231,7 @@ public with sharing class RecordContextController {
         requestBody.put('recordContext', recordContext);
         
         // Set request body
+        System.debug('Request Body: ' + JSON.serialize(requestBody));
         request.setBody(JSON.serialize(requestBody));
         
         // Send the request
