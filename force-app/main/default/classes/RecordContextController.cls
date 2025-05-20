@@ -109,114 +109,114 @@ public with sharing class RecordContextController {
     /**
      * Get related records
      */
-    public static Map<String, Object> getRelatedRecords(String recordId, String objectApiName) {
-        if (String.isBlank(recordId) || String.isBlank(objectApiName)) return new Map<String, Object>();
+    /**
+ * Get related records with all accessible fields
+ */
+public static Map<String, Object> getRelatedRecords(String recordId, String objectApiName) {
+    if (String.isBlank(recordId) || String.isBlank(objectApiName)) return new Map<String, Object>();
+    
+    Map<String, Object> relatedRecordsMap = new Map<String, Object>();
+    
+    // Get object schema
+    Schema.DescribeSObjectResult objectDescribe = Schema.getGlobalDescribe().get(objectApiName).getDescribe();
+    
+    // Get child relationships
+    List<Schema.ChildRelationship> childRelationships = objectDescribe.getChildRelationships();
+    
+    // Limit to a reasonable number to avoid hitting governor limits
+    Integer relationshipLimit = 5;
+    Integer currentCount = 0;
+    
+    // Maintain a set of known problematic objects or relationship fields
+    Set<String> nonQueryableObjects = new Set<String>{
+        'OutgoingEmail', 'EmailMessage', 'ContentDocumentLink'
+    };
+    
+    Set<String> nonFilterableFields = new Set<String>{
+        'RelatedToId', 'LinkedEntityId'
+    };
+    
+    for (Schema.ChildRelationship relationship : childRelationships) {
+        if (currentCount >= relationshipLimit) break;
         
-        Map<String, Object> relatedRecordsMap = new Map<String, Object>();
+        Schema.DescribeSObjectResult childObjectDescribe = relationship.getChildSObject().getDescribe();
+        String childObjectName = childObjectDescribe.getName();
+        String relationshipField = relationship.getField().getDescribe().getName();
         
-        // Get object schema
-        Schema.DescribeSObjectResult objectDescribe = Schema.getGlobalDescribe().get(objectApiName).getDescribe();
+        if (childObjectName.endsWith('ChangeEvent') || 
+            childObjectName.startsWith('History') || 
+            childObjectName.startsWith('Share') ||
+            !childObjectDescribe.isAccessible() ||
+            !childObjectDescribe.isQueryable() ||
+            nonQueryableObjects.contains(childObjectName) ||
+            nonFilterableFields.contains(relationshipField)) {
+            continue;
+        }
         
-        // Get child relationships
-        List<Schema.ChildRelationship> childRelationships = objectDescribe.getChildRelationships();
+        // Get related records
+        String relatedListName = childObjectName;
         
-        // Limit to a reasonable number to avoid hitting governor limits
-        Integer relationshipLimit = 5;
-        Integer currentCount = 0;
-        
-        // Maintain a set of known problematic objects or relationship fields
-        Set<String> nonQueryableObjects = new Set<String>{
-            'OutgoingEmail', 'EmailMessage', 'ContentDocumentLink'
-        };
-        
-        Set<String> nonFilterableFields = new Set<String>{
-            'RelatedToId', 'LinkedEntityId'
-        };
-        
-        for (Schema.ChildRelationship relationship : childRelationships) {
-            if (currentCount >= relationshipLimit) break;
+        try {
+            // Get the field map for this object
+            Map<String, Schema.SObjectField> fieldMap = childObjectDescribe.fields.getMap();
             
-            Schema.DescribeSObjectResult childObjectDescribe = relationship.getChildSObject().getDescribe();
-            String childObjectName = childObjectDescribe.getName();
-            String relationshipField = relationship.getField().getDescribe().getName();
-            
-            // Skip certain system objects and objects that don't support queries
-            if (childObjectName.endsWith('ChangeEvent') || 
-                childObjectName.startsWith('History') || 
-                childObjectName.startsWith('Share') ||
-                !childObjectDescribe.isAccessible() ||
-                !childObjectDescribe.isQueryable() ||
-                nonQueryableObjects.contains(childObjectName) ||
-                nonFilterableFields.contains(relationshipField)) {
-                
-                // System.debug('Skipping relationship ' + childObjectName + '.' + relationshipField + 
-                            //  ' - Object may not support querying or field may not be filterable');
+            // Check if the relationship field is filterable
+            if (!fieldMap.get(relationshipField).getDescribe().isFilterable()) {
+                System.debug('Skipping relationship ' + childObjectName + '.' + relationshipField + 
+                            ' - Field is not filterable');
                 continue;
             }
             
-            // Get related records
-            String relatedListName = childObjectName;
+            // Get all accessible fields to query
+            List<String> fieldsToQuery = new List<String>();
             
-            try {
-                // Get the field map for this object
-                Map<String, Schema.SObjectField> fieldMap = childObjectDescribe.fields.getMap();
+            for(String fieldName : fieldMap.keySet()) {
+                Schema.DescribeFieldResult fieldDescribe = fieldMap.get(fieldName).getDescribe();
                 
-                // Check if the relationship field is filterable
-                if (!fieldMap.get(relationshipField).getDescribe().isFilterable()) {
-                    System.debug('Skipping relationship ' + childObjectName + '.' + relationshipField + 
-                                ' - Field is not filterable');
-                    continue;
+                // Only include fields that are accessible and not relationship fields
+                // (unless they are lookup fields which we want to include)
+                if(fieldDescribe.isAccessible() && 
+                  (!fieldDescribe.isCalculated() || fieldDescribe.isFilterable())) {
+                    fieldsToQuery.add(fieldName);
                 }
-                
-                // Determine which fields to query
-                List<String> fieldsToQuery = new List<String>{'Id'};
-                
-                // Check if Name field exists and add it if it does
-                if (fieldMap.containsKey('Name')) {
-                    fieldsToQuery.add('Name');
-                } else {
-                    // Look for alternative display fields
-                    for (String potentialField : new List<String>{
-                        'Subject', 'Title', 'CaseNumber', 'OrderNumber', 'TaskSubject',
-                        'Description', 'LineItemNumber', 'ApprovalName'
-                    }) {
-                        if (fieldMap.containsKey(potentialField)) {
-                            fieldsToQuery.add(potentialField);
-                            break;
-                        }
-                    }
-                }
-                
-                // Build dynamic SOQL for child records
-                String childSoql = 'SELECT ' + String.join(fieldsToQuery, ',') + 
-                                ' FROM ' + relatedListName + 
-                                ' WHERE ' + relationshipField + ' = :recordId LIMIT 100';
-                
-                List<SObject> relatedRecords = Database.query(childSoql);
-                
-                if (!relatedRecords.isEmpty()) {
-                    List<Map<String, Object>> recordsList = new List<Map<String, Object>>();
-                    
-                    for (SObject relatedRecord : relatedRecords) {
-                        Map<String, Object> recordMap = new Map<String, Object>();
-                        for (String field : relatedRecord.getPopulatedFieldsAsMap().keySet()) {
-                            recordMap.put(field, relatedRecord.get(field));
-                        }
-                        recordsList.add(recordMap);
-                    }
-                    
-                    relatedRecordsMap.put(relatedListName, recordsList);
-                    currentCount++;
-                    System.debug('Successfully queried ' + relatedRecords.size() + ' ' + relatedListName + ' records');
-                }
-            } catch (Exception e) {
-                // Skip this relationship if there's an error, but log it for debugging
-                System.debug('Error querying related records for ' + relatedListName + ': ' + e.getMessage());
             }
+            
+            // Skip if no queryable fields (should not happen but as a precaution)
+            if(fieldsToQuery.isEmpty()) {
+                System.debug('No accessible fields found for ' + childObjectName);
+                continue;
+            }
+            
+            // Build dynamic SOQL for child records
+            String childSoql = 'SELECT ' + String.join(fieldsToQuery, ',') + 
+                            ' FROM ' + relatedListName + 
+                            ' WHERE ' + relationshipField + ' = :recordId LIMIT 100';
+            
+            List<SObject> relatedRecords = Database.query(childSoql);
+            
+            if (!relatedRecords.isEmpty()) {
+                List<Map<String, Object>> recordsList = new List<Map<String, Object>>();
+                
+                for (SObject relatedRecord : relatedRecords) {
+                    Map<String, Object> recordMap = new Map<String, Object>();
+                    for (String field : relatedRecord.getPopulatedFieldsAsMap().keySet()) {
+                        recordMap.put(field, relatedRecord.get(field));
+                    }
+                    recordsList.add(recordMap);
+                }
+                
+                relatedRecordsMap.put(relatedListName, recordsList);
+                currentCount++;
+                System.debug('Successfully queried ' + relatedRecords.size() + ' ' + relatedListName + ' records with ' + fieldsToQuery.size() + ' fields');
+            }
+        } catch (Exception e) {
+            // Skip this relationship if there's an error, but log it for debugging
+            System.debug('Error querying related records for ' + relatedListName + ': ' + e.getMessage());
         }
-        
-        return relatedRecordsMap;
     }
+    
+    return relatedRecordsMap;
+}
     private static final String ENDPOINT = 'https://ykb08pmg3l.execute-api.ap-south-1.amazonaws.com/default/SF-context-data';
     public static HttpResponse callLambdaFunction(String prompt, Map<String, Object> recordContext) {
         // Create HTTP request
