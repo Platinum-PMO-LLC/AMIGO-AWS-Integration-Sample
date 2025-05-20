@@ -248,8 +248,31 @@ public with sharing class RecordContextController {
     }
     
     // If you need to get the response body as a String
-    public static String getResponseBody(String prompt, Map<String, Object> recordContext) {
-        HttpResponse response = callLambdaFunction(prompt, recordContext);
-        return response.getBody();
+   public static String getResponseBody(String prompt, Map<String, Object> recordContext) {
+        try {
+            HttpResponse response = callLambdaFunction(prompt, recordContext);
+            
+            if (response.getStatusCode() != 200) {
+                throw new AuraHandledException('API request failed: ' + response.getStatus());
+            }
+            
+            // Parse the JSON response
+            Map<String, Object> responseMap = (Map<String, Object>) JSON.deserializeUntyped(response.getBody());
+            
+            // Check response structure
+            if (!responseMap.containsKey('data')) {
+                throw new AuraHandledException('Invalid API response structure');
+            }
+            
+            Map<String, Object> data = (Map<String, Object>) responseMap.get('data');
+            String aiResponse = (String) data.get('aiResponse');
+            
+            // Clean up the response
+            return aiResponse.replaceAll('\n', ' ').replaceAll('\"', '').trim();
+            
+        } catch (Exception e) {
+            System.debug('Error processing response: ' + e.getMessage());
+            throw new AuraHandledException('Error getting AI response: ' + e.getMessage());
+        }
     }
 }
