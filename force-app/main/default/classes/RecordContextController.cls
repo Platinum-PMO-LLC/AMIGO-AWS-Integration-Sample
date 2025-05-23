@@ -1,7 +1,13 @@
 public with sharing class RecordContextController {
 
+    // Token limits and configuration
+    private static final Integer MAX_TOKEN_LIMIT = 7000; // Leave buffer for response
+    private static final Integer MAX_RELATED_RECORDS_PER_OBJECT = 100; // Max number of related records per object type
+    private static final Integer MAX_FIELDS_PER_RECORD = 30; // Limit fields per main record
+    private static final Integer MAX_RELATED_OBJECT_TYPES = 3; // Max number of related object types to fetch
+
     @AuraEnabled
-    public static Map<String, Object> getRecordContext(String recordId, String prompt) { // Added prompt here
+    public static Map<String, Object> getRecordContext(String recordId, String prompt) {
         if (String.isBlank(recordId)) {
             throw new AuraHandledException('Record ID is required');
         }
@@ -13,20 +19,15 @@ public with sharing class RecordContextController {
             System.debug('Object API Name: ' + objectApiName);
             result.put('objectApiName', objectApiName);
 
-            Map<String, Object> recordFields = getRecordFields(recordId, objectApiName);
+            Map<String, Object> recordFields = getRecordFields(recordId, objectApiName, prompt);
             result.put('record', recordFields);
 
-            // Extract desired related objects from prompt
             Set<String> desiredRelatedObjects = extractDesiredObjectsFromPrompt(prompt, objectApiName);
             System.debug('Desired related objects from prompt: ' + JSON.serialize(desiredRelatedObjects));
 
             Map<String, Object> relatedRecords = getRelatedRecords(recordId, objectApiName, desiredRelatedObjects);
             result.put('relatedRecords', relatedRecords);
 
-            // These debug lines will now reflect the filtered related records
-            Integer relatedObjectCount = relatedRecords.size();
-            List<String> relatedObjectNames = new List<String>(relatedRecords.keySet());
-            System.debug('Actual related objects fetched: ' + relatedObjectCount + ' - ' + JSON.serialize(relatedObjectNames));
             System.debug('Final record context: ' + JSON.serializePretty(result));
             
             return result;
@@ -43,12 +44,14 @@ public with sharing class RecordContextController {
         }
         
         try {
-            // Get record context, now filtered by prompt
             Map<String, Object> recordContext = getRecordContext(recordId, prompt);
             
-            String response = getResponseBody(prompt, recordContext);
+            // Optimize context based on token limits
+            Map<String, Object> optimizedContext = optimizeContextForTokens(recordContext, prompt);
+            
+            String response = getResponseBody(prompt, optimizedContext);
 
-            System.debug('Simulated response: ' + JSON.serializePretty(response));
+            System.debug('AI response: ' + response);
             
             return response;
         } catch (Exception e) {
@@ -56,25 +59,249 @@ public with sharing class RecordContextController {
             throw new AuraHandledException('Error processing prompt: ' + e.getMessage());
         }
     }
-    
+
     /**
-     * Extracts potential SObject API names from a user prompt.
-     * Enhanced to handle namespaced objects, plurals, and labels.
+     * Optimizes the record context to fit within token limits.
+     * This method prioritizes reducing the number of fields per record and then
+     * the number of related records if the token limit is still exceeded.
      */
+    private static Map<String, Object> optimizeContextForTokens(Map<String, Object> recordContext, String prompt) {
+        String contextJson = JSON.serialize(recordContext);
+        Integer estimatedTokens = estimateTokenCount(contextJson + prompt);
+        
+        System.debug('Estimated tokens before optimization: ' + estimatedTokens);
+        
+        if (estimatedTokens <= MAX_TOKEN_LIMIT) {
+            return recordContext; // No optimization needed
+        }
+        
+        Map<String, Object> optimizedContext = new Map<String, Object>(recordContext);
+        
+        // Step 1: Optimize fields within the main record based on prompt relevance
+        if (optimizedContext.containsKey('record')) {
+            Map<String, Object> record = (Map<String, Object>) optimizedContext.get('record');
+            Map<String, Object> essentialFields = getEssentialFields(record, prompt);
+            optimizedContext.put('record', essentialFields);
+        }
+
+        // Step 2: Optimize related records by limiting fields per related record
+        // and then potentially truncating the number of related records if still over limit.
+        if (optimizedContext.containsKey('relatedRecords')) {
+            Map<String, Object> relatedRecords = (Map<String, Object>) optimizedContext.get('relatedRecords');
+            
+            // This method now focuses on ensuring each related record has only essential fields
+            // and respects MAX_RELATED_RECORDS_PER_OBJECT from the query.
+            // It no longer applies a hardcoded limit of 5 records per object type here,
+            // relying on MAX_RELATED_RECORDS_PER_OBJECT from the SOQL query.
+            Map<String, Object> processedRelated = processRelatedRecordsForCompression(relatedRecords);
+            optimizedContext.put('relatedRecords', processedRelated);
+
+            // Re-estimate tokens after initial optimization of main record and related record fields
+            String currentOptimizedJson = JSON.serialize(optimizedContext);
+            Integer currentEstimatedTokens = estimateTokenCount(currentOptimizedJson + prompt);
+            System.debug('Estimated tokens after initial field optimization: ' + currentEstimatedTokens);
+
+            // If still over the token limit, then apply more aggressive truncation of related records count
+            if (currentEstimatedTokens > MAX_TOKEN_LIMIT) {
+                System.debug('Still over token limit, applying aggressive related record truncation.');
+                Map<String, Object> aggressivelyTruncatedRelated = truncateRelatedRecordsAggressively(processedRelated);
+                optimizedContext.put('relatedRecords', aggressivelyTruncatedRelated);
+            }
+        }
+        
+        String optimizedJson = JSON.serialize(optimizedContext);
+        Integer finalTokens = estimateTokenCount(optimizedJson + prompt);
+        System.debug('Estimated tokens after final optimization: ' + finalTokens);
+        
+        return optimizedContext;
+    }
+
+    /**
+     * Estimates token count (rough approximation: 1 token ≈ 4 characters)
+     */
+    private static Integer estimateTokenCount(String text) {
+        return text != null ? (text.length() / 4) : 0;
+    }
+
+    /**
+     * Processes related records to ensure each record only contains essential fields.
+     * This method does NOT truncate the number of related records per object type,
+     * it relies on the initial query limit (MAX_RELATED_RECORDS_PER_OBJECT).
+     */
+    private static Map<String, Object> processRelatedRecordsForCompression(Map<String, Object> relatedRecords) {
+        Map<String, Object> processed = new Map<String, Object>();
+        
+        for (String objectLabel : relatedRecords.keySet()) {
+            List<Object> recordsList = (List<Object>) relatedRecords.get(objectLabel);
+            List<Object> processedList = new List<Object>();
+            
+            for (Object recordObj : recordsList) {
+                if (recordObj instanceof Map<String, Object>) {
+                    Map<String, Object> recordMap = (Map<String, Object>) recordObj;
+                    // Apply field reduction to each related record
+                    Map<String, Object> essentialRecord = getEssentialFieldsFromRecord(recordMap);
+                    processedList.add(essentialRecord);
+                }
+            }
+            
+            if (!processedList.isEmpty()) {
+                processed.put(objectLabel, processedList);
+            }
+        }
+        
+        return processed;
+    }
+
+    /**
+     * Aggressively truncates the number of related records per object type
+     * if the token limit is still exceeded after other optimizations.
+     * This is a fallback for severe token constraints.
+     */
+    private static Map<String, Object> truncateRelatedRecordsAggressively(Map<String, Object> relatedRecords) {
+        Map<String, Object> truncated = new Map<String, Object>();
+        
+        for (String objectLabel : relatedRecords.keySet()) {
+            List<Object> recordsList = (List<Object>) relatedRecords.get(objectLabel);
+            List<Object> truncatedList = new List<Object>();
+            
+            // Limit to a very small number of records (e.g., 5) if aggressive truncation is needed
+            Integer count = 0;
+            for (Object recordObj : recordsList) {
+                if (count >= 5) break; 
+                truncatedList.add(recordObj); // Add the already field-optimized record
+                count++;
+            }
+            
+            if (!truncatedList.isEmpty()) {
+                truncated.put(objectLabel, truncatedList);
+            }
+        }
+        
+        return truncated;
+    }
+
+
+    /**
+     * Gets essential fields based on prompt context and common important fields
+     */
+    private static Map<String, Object> getEssentialFields(Map<String, Object> record, String prompt) {
+        Map<String, Object> essential = new Map<String, Object>();
+        
+        // Always include these essential fields
+        Set<String> alwaysInclude = new Set<String>{'Id', 'Name', 'Status', 'Stage', 'Amount', 'CloseDate', 'Type', 'Priority'};
+        
+        // Extract fields mentioned in the prompt
+        Set<String> promptFields = extractFieldsFromPrompt(prompt);
+        
+        Set<String> fieldsToInclude = new Set<String>();
+        fieldsToInclude.addAll(alwaysInclude);
+        fieldsToInclude.addAll(promptFields);
+        
+        Integer fieldCount = 0;
+        for (String fieldName : record.keySet()) {
+            if (fieldCount >= MAX_FIELDS_PER_RECORD) break;
+            
+            String transformedFieldName = transformFieldName(fieldName);
+            if (shouldIncludeField(fieldName, transformedFieldName, fieldsToInclude) || 
+                record.keySet().size() <= 5) { // If record has few fields, include them all
+                essential.put(fieldName, record.get(fieldName));
+                fieldCount++;
+            }
+        }
+        
+        return essential;
+    }
+
+    /**
+     * Gets essential fields from a record map (for related records).
+     * This method limits the number of fields for each individual related record.
+     */
+    private static Map<String, Object> getEssentialFieldsFromRecord(Map<String, Object> recordMap) {
+        Map<String, Object> essential = new Map<String, Object>();
+        
+        // Priority order for fields
+        List<String> priorityFields = new List<String>{'Id', 'Name', 'Status', 'Stage', 'Amount', 'Subject', 'Type'};
+        
+        Integer fieldCount = 0;
+        // First, add priority fields if they exist
+        for (String priority : priorityFields) {
+            if (fieldCount >= 5) break; // Limit to 5 fields per related record
+            
+            for (String fieldName : recordMap.keySet()) {
+                if (fieldName.toLowerCase().contains(priority.toLowerCase()) || 
+                    transformFieldName(fieldName).toLowerCase().contains(priority.toLowerCase())) {
+                    essential.put(fieldName, recordMap.get(fieldName));
+                    fieldCount++;
+                    break;
+                }
+            }
+        }
+        
+        // Fill remaining slots with other fields
+        for (String fieldName : recordMap.keySet()) {
+            if (fieldCount >= 5) break;
+            if (!essential.containsKey(fieldName)) {
+                essential.put(fieldName, recordMap.get(fieldName));
+                fieldCount++;
+            }
+        }
+        
+        return essential;
+    }
+
+    /**
+     * Extracts potential field names from the prompt
+     */
+    private static Set<String> extractFieldsFromPrompt(String prompt) {
+        Set<String> extractedFields = new Set<String>();
+        
+        if (String.isBlank(prompt)) return extractedFields;
+        
+        String promptLower = prompt.toLowerCase();
+        
+        // Common field patterns
+        List<String> fieldPatterns = new List<String>{
+            'name', 'status', 'stage', 'amount', 'date', 'owner', 'type', 'priority', 
+            'description', 'phone', 'email', 'address', 'account', 'contact', 'opportunity'
+        };
+        
+        for (String pattern : fieldPatterns) {
+            if (promptLower.contains(pattern)) {
+                extractedFields.add(pattern);
+            }
+        }
+        
+        return extractedFields;
+    }
+
+    /**
+     * Determines if a field should be included based on importance
+     */
+    private static Boolean shouldIncludeField(String fieldName, String transformedName, Set<String> importantFields) {
+        String fieldLower = fieldName.toLowerCase();
+        String transformedLower = transformedName.toLowerCase();
+        
+        for (String important : importantFields) {
+            if (fieldLower.contains(important.toLowerCase()) || 
+                transformedLower.contains(important.toLowerCase())) {
+                return true;
+            }
+        }
+        
+        return false;
+    }
+    
     private static Set<String> extractDesiredObjectsFromPrompt(String prompt, String parentObjectApiName) {
         Set<String> desiredObjects = new Set<String>();
         if (String.isBlank(prompt) || String.isBlank(parentObjectApiName)) {
-            System.debug('Prompt or parentObjectApiName is blank. No related objects will be extracted for filtering.');
             return desiredObjects;
         }
-
-        System.debug('Attempting to extract desired objects from prompt: "' + prompt + '" for parent: ' + parentObjectApiName);
 
         Schema.SObjectType parentType = Schema.getGlobalDescribe().get(parentObjectApiName);
         if (parentType == null) {
-            System.debug('Invalid parentObjectApiName in extractDesiredObjectsFromPrompt: ' + parentObjectApiName);
             return desiredObjects;
         }
+        
         Schema.DescribeSObjectResult parentDescribe = parentType.getDescribe();
         List<Schema.ChildRelationship> childRelationships = parentDescribe.getChildRelationships();
         String promptLowerCase = prompt.toLowerCase();
@@ -85,95 +312,48 @@ public with sharing class RecordContextController {
             String childLabel = childObjectDescribe.getLabel();
             String childLabelPlural = childObjectDescribe.getLabelPlural();
             
-            // System.debug('Checking object: ' + childApiName + ' (Label: ' + childLabel + ', Label Plural: ' + childLabelPlural + ')');
-            
             Boolean found = false;
 
-            // 1. Try exact API name match
+            // Check API name
             if (promptLowerCase.contains(childApiName.toLowerCase())) {
                 desiredObjects.add(childApiName);
-                System.debug('Prompt extraction: Found by exact API name: ' + childApiName);
                 found = true;
             }
             
-            // 2. Try object label matches (singular and plural)
+            // Check labels
             if (!found && String.isNotBlank(childLabel)) {
                 String labelRegex = '\\b' + Pattern.quote(childLabel.toLowerCase()) + '\\b';
-                System.Pattern labelPattern = System.Pattern.compile(labelRegex);
-                System.Matcher labelMatcher = labelPattern.matcher(promptLowerCase);
+                Pattern labelPattern = Pattern.compile(labelRegex);
+                Matcher labelMatcher = labelPattern.matcher(promptLowerCase);
                 if (labelMatcher.find()) {
                     desiredObjects.add(childApiName);
-                    System.debug('Prompt extraction: Found by label: ' + childLabel + ' (maps to ' + childApiName + ')');
                     found = true;
                 }
             }
             
             if (!found && String.isNotBlank(childLabelPlural)) {
                 String labelPluralRegex = '\\b' + Pattern.quote(childLabelPlural.toLowerCase()) + '\\b';
-                System.Pattern labelPluralPattern = System.Pattern.compile(labelPluralRegex);
-                System.Matcher labelPluralMatcher = labelPluralPattern.matcher(promptLowerCase);
+                Pattern labelPluralPattern = Pattern.compile(labelPluralRegex);
+                Matcher labelPluralMatcher = labelPluralPattern.matcher(promptLowerCase);
                 if (labelPluralMatcher.find()) {
                     desiredObjects.add(childApiName);
-                    System.debug('Prompt extraction: Found by plural label: ' + childLabelPlural + ' (maps to ' + childApiName + ')');
                     found = true;
                 }
             }
 
-            // 3. Try namespaced object name extraction (for custom objects)
-            if (!found && childApiName.contains('__c')) {
-                // Extract the base name from namespaced custom object
-                // Format: Namespace__ObjectName__c or ObjectName__c
-                String baseName = childApiName;
-                if (baseName.endsWith('__c')) {
-                    baseName = baseName.substring(0, baseName.length() - 3); // Remove __c
-                }
-                if (baseName.contains('__')) {
-                    // Has namespace, get the part after the last __
-                    Integer lastIndex = baseName.lastIndexOf('__');
-                    baseName = baseName.substring(lastIndex + 2);
-                }
-                
-                // Try matching the base name (singular and with 's' for plural)
-                String baseNameRegex = '\\b' + Pattern.quote(baseName.toLowerCase()) + 's?\\b';
-                System.Pattern baseNamePattern = System.Pattern.compile(baseNameRegex);
-                System.Matcher baseNameMatcher = baseNamePattern.matcher(promptLowerCase);
-                if (baseNameMatcher.find()) {
-                    desiredObjects.add(childApiName);
-                    System.debug('Prompt extraction: Found by base name: ' + baseName + ' (maps to ' + childApiName + ')');
-                    found = true;
-                }
-            }
-
-            // 4. Try relationship name matching
-            if (!found) {
-                String relationshipName = cr.getRelationshipName();
-                if (String.isNotBlank(relationshipName)) {
-                    String relationshipNameRegex = '\\b' + Pattern.quote(relationshipName.toLowerCase()) + '\\b';
-                    System.Pattern relationshipNamePattern = System.Pattern.compile(relationshipNameRegex);
-                    System.Matcher relationshipNameMatcher = relationshipNamePattern.matcher(promptLowerCase);
-
-                    if (relationshipNameMatcher.find()) {
-                        desiredObjects.add(childApiName);
-                        System.debug('Prompt extraction: Found by relationship name: ' + relationshipName + ' (maps to ' + childApiName + ')');
-                    }
-                }
+            // Break if we have enough objects
+            if (desiredObjects.size() >= MAX_RELATED_OBJECT_TYPES) {
+                break;
             }
         }
-        System.debug('Prompt extraction: Final desired objects: ' + JSON.serialize(desiredObjects));
+        
         return desiredObjects;
     }
 
-    public static String getObjectApiName (Id recordId) {
+    public static String getObjectApiName(Id recordId) {
         return recordId.getSobjectType().getDescribe().getName();
     }
     
-    /**
-     * Transforms API field names to human-readable format
-     * Examples:
-     * - PlatinumPMO__Current_Status__c -> Current Status
-     * - Account_Name__c -> Account Name
-     * - Name -> Name (standard fields unchanged)
-     */
     private static String transformFieldName(String apiName) {
         if (String.isBlank(apiName)) {
             return apiName;
@@ -181,35 +361,28 @@ public with sharing class RecordContextController {
         
         String transformed = apiName;
         
-        // Remove namespace prefix (everything before and including the first __)
         if (transformed.contains('__') && transformed.indexOf('__') < transformed.lastIndexOf('__')) {
             transformed = transformed.substring(transformed.indexOf('__') + 2);
         }
         
-        // Remove __c suffix for custom fields
         if (transformed.endsWith('__c')) {
             transformed = transformed.substring(0, transformed.length() - 3);
         }
         
-        // Replace underscores with spaces
         transformed = transformed.replace('_', ' ');
         
-        // Convert to title case (first letter of each word capitalized)
         List<String> words = transformed.split(' ');
         List<String> titleCaseWords = new List<String>();
         for (String word : words) {
             if (String.isNotBlank(word)) {
                 titleCaseWords.add(word.substring(0, 1).toUpperCase() + 
-                                 (word.length() > 1 ? word.substring(1).toLowerCase() : ''));
+                                   (word.length() > 1 ? word.substring(1).toLowerCase() : ''));
             }
         }
         
         return String.join(titleCaseWords, ' ');
     }
     
-    /**
-     * Transforms a record map to use human-readable field names
-     */
     private static Map<String, Object> transformRecordFieldNames(Map<String, Object> record) {
         Map<String, Object> transformedRecord = new Map<String, Object>();
         
@@ -221,19 +394,14 @@ public with sharing class RecordContextController {
         return transformedRecord;
     }
     
-    /**
-     * Transforms the entire record context to use human-readable field names
-     */
     private static Map<String, Object> transformRecordContext(Map<String, Object> recordContext) {
         Map<String, Object> transformedContext = new Map<String, Object>();
         
-        // Transform main record
         if (recordContext.containsKey('record')) {
             Map<String, Object> record = (Map<String, Object>) recordContext.get('record');
             transformedContext.put('record', transformRecordFieldNames(record));
         }
         
-        // Transform related records
         if (recordContext.containsKey('relatedRecords')) {
             Map<String, Object> relatedRecords = (Map<String, Object>) recordContext.get('relatedRecords');
             Map<String, Object> transformedRelatedRecords = new Map<String, Object>();
@@ -257,7 +425,6 @@ public with sharing class RecordContextController {
             transformedContext.put('relatedRecords', transformedRelatedRecords);
         }
         
-        // Copy other properties as-is
         for (String key : recordContext.keySet()) {
             if (key != 'record' && key != 'relatedRecords') {
                 transformedContext.put(key, recordContext.get(key));
@@ -267,24 +434,27 @@ public with sharing class RecordContextController {
         return transformedContext;
     }
     
-    private static Map<String, Object> getRecordFields(String recordId, String objectApiName) {
+    private static Map<String, Object> getRecordFields(String recordId, String objectApiName, String prompt) {
         if (String.isBlank(recordId) || String.isBlank(objectApiName)) return new Map<String, Object>();
         
         Map<String, Schema.SObjectField> sObjectFieldMap = Schema.getGlobalDescribe().get(objectApiName).getDescribe().fields.getMap();
         List<String> fieldNames = new List<String>();
         
+        // Get fields mentioned in prompt
+        Set<String> promptFields = extractFieldsFromPrompt(prompt);
+        
         for(String fieldKey : sObjectFieldMap.keySet()){
             Schema.DescribeFieldResult fieldDescribe = sObjectFieldMap.get(fieldKey).getDescribe();
-            // Corrected condition: removed non-existent isCompound() and rely on SoapType checks
+            
             if(fieldDescribe.isAccessible() && 
-               fieldDescribe.getSoapType() != Schema.SoapType.ADDRESS && // Explicitly skip Address compound
-               fieldDescribe.getSoapType() != Schema.SoapType.LOCATION  // Explicitly skip Location compound
-              ) {
-                 // Additional check for specific problematic field types if necessary
-                if (!fieldDescribe.isCalculated() || fieldDescribe.isNillable() || fieldDescribe.isFilterable()) { // Be more selective about calculated fields
-                    if (!fieldKey.contains('.')) { // Avoid relationship fields in this main query
-                         fieldNames.add(fieldDescribe.getName());
-                    }
+               fieldDescribe.getSoapType() != Schema.SoapType.ADDRESS && 
+               fieldDescribe.getSoapType() != Schema.SoapType.LOCATION &&
+               !fieldKey.contains('.')) {
+                
+                // Prioritize fields mentioned in prompt or common important fields
+                String fieldName = fieldDescribe.getName();
+                if (isImportantField(fieldName, promptFields) || fieldNames.size() < MAX_FIELDS_PER_RECORD) {
+                    fieldNames.add(fieldName);
                 }
             }
         }
@@ -292,7 +462,7 @@ public with sharing class RecordContextController {
         if(fieldNames.isEmpty()){ 
             fieldNames.add('Id');
             if(sObjectFieldMap.containsKey('Name') && sObjectFieldMap.get('Name').getDescribe().isAccessible()){
-                 fieldNames.add('Name');
+                   fieldNames.add('Name');
             }
         } else if (!fieldNames.contains('Id')) {
             fieldNames.add('Id'); 
@@ -303,13 +473,11 @@ public with sharing class RecordContextController {
         
         SObject record;
         try {
-            System.debug('Executing main record query: ' + soqlQuery);
             record = Database.query(soqlQuery);
         } catch (Exception e) {
-            System.debug('Dynamic query for main record failed: ' + e.getMessage() + '. Falling back to Id, Name.');
             List<String> basicFields = new List<String>{'Id'};
-            if(sObjectFieldMap.containsKey('Name') && sObjectFieldMap.get('Name').getDescribe().isAccessible()){
-                 basicFields.add('Name');
+            if(sObjectFieldMap.containsKey('Name')){
+                   basicFields.add('Name');
             }
             soqlQuery = 'SELECT ' + String.join(basicFields, ',') + ' FROM ' + objectApiName + ' WHERE Id = :recordId LIMIT 1';
             record = Database.query(soqlQuery);
@@ -322,6 +490,26 @@ public with sharing class RecordContextController {
         
         return recordMap;
     }
+
+    private static Boolean isImportantField(String fieldName, Set<String> promptFields) {
+        String fieldLower = fieldName.toLowerCase();
+        
+        // Always important fields
+        if (fieldLower.contains('name') || fieldLower.contains('status') || 
+            fieldLower.contains('stage') || fieldLower.contains('amount') ||
+            fieldLower.contains('date') || fieldLower.contains('owner')) {
+            return true;
+        }
+        
+        // Check against prompt fields
+        for (String promptField : promptFields) {
+            if (fieldLower.contains(promptField.toLowerCase())) {
+                return true;
+            }
+        }
+        
+        return false;
+    }
     
     public static Map<String, Object> getRelatedRecords(String recordId, String objectApiName, Set<String> desiredRelatedObjects) {
         Map<String, Object> relatedRecordsMap = new Map<String, Object>();
@@ -331,7 +519,6 @@ public with sharing class RecordContextController {
         }
         
         if (desiredRelatedObjects == null || desiredRelatedObjects.isEmpty()) {
-            System.debug('No desired related objects specified or extracted from prompt. Skipping related record fetch.');
             return relatedRecordsMap;
         }
         
@@ -339,25 +526,19 @@ public with sharing class RecordContextController {
         List<Schema.ChildRelationship> childRelationships = objectDescribe.getChildRelationships();
         
         Integer processedObjectTypesCount = 0;
-        Integer maxDesiredObjectTypesToQuery = 5; 
 
         Set<String> restrictedObjects = new Set<String>{
             'OutgoingEmail', 'EmailMessage', 'ContentDocumentLink', 'NetworkUserHistoryRecent'
         };
         
-        Set<String> nonFilterableRelationshipFields = new Set<String>{ 
-            'RelatedToId', 'LinkedEntityId' 
-        };
-        
         for (Schema.ChildRelationship relationship : childRelationships) {
-            if (processedObjectTypesCount >= maxDesiredObjectTypesToQuery) {
-                System.debug('Reached max desired object types to query (' + maxDesiredObjectTypesToQuery + '). Stopping related record search.');
+            if (processedObjectTypesCount >= MAX_RELATED_OBJECT_TYPES) {
                 break;
             }
             
             Schema.DescribeSObjectResult childObjectDescribe = relationship.getChildSObject().getDescribe();
             String childObjectName = childObjectDescribe.getName();
-            Schema.SObjectField childField = relationship.getField(); // This is the field on the child object that links to the parent
+            Schema.SObjectField childField = relationship.getField();
             
             if (!desiredRelatedObjects.contains(childObjectName)) {
                 continue; 
@@ -366,15 +547,12 @@ public with sharing class RecordContextController {
             String relationshipFieldNameOnChild = childField.getDescribe().getName();
             
             if (childObjectName.endsWith('ChangeEvent') || 
-                childObjectName.contains('History') || // Broader match for history objects
-                childObjectName.contains('Share') ||   // Broader match for share objects
+                childObjectName.contains('History') || 
+                childObjectName.contains('Share') ||  
                 !childObjectDescribe.isAccessible() ||
                 !childObjectDescribe.isQueryable() ||
                 restrictedObjects.contains(childObjectName) ||
-                nonFilterableRelationshipFields.contains(relationshipFieldNameOnChild) || 
                 !childField.getDescribe().isFilterable()) { 
-                System.debug('Skipping relationship: ' + childObjectName + 
-                             ' due to restrictions or relationship field ' + relationshipFieldNameOnChild + ' not filterable.');
                 continue;
             }
             
@@ -383,31 +561,21 @@ public with sharing class RecordContextController {
             try {
                 Map<String, Schema.SObjectField> childFieldMap = childObjectDescribe.fields.getMap();
                 
-                List<String> fieldsToQuery = new List<String>();
-                for(String fieldNameKey : childFieldMap.keySet()) {
-                    Schema.DescribeFieldResult fieldDesc = childFieldMap.get(fieldNameKey).getDescribe();
-                    if(fieldDesc.isAccessible() && 
-                       (!fieldDesc.isCalculated() || fieldDesc.isFilterable()) && // Include filterable calculated fields
-                       fieldDesc.getSoapType() != Schema.SoapType.ADDRESS && 
-                       fieldDesc.getSoapType() != Schema.SoapType.LOCATION &&
-                       !fieldNameKey.contains('.')) { 
-                        fieldsToQuery.add(fieldDesc.getName());
-                    }
-                }
+                // Get all accessible non-system generated fields for related records
+                List<String> fieldsToQuery = getAllNonSystemFieldsForQuery(childFieldMap);
                 
                 if(fieldsToQuery.isEmpty()) {
-                    System.debug('No accessible fields found for ' + childObjectName + '. Skipping.');
                     continue;
                 }
-                 if (!fieldsToQuery.contains('Id')) { 
+                
+                if (!fieldsToQuery.contains('Id')) { 
                     fieldsToQuery.add('Id');
                 }
                 
                 String childSoql = 'SELECT ' + String.join(new List<String>(new Set<String>(fieldsToQuery)), ',') + 
                                    ' FROM ' + childObjectName + 
-                                   ' WHERE ' + relationshipFieldNameOnChild + ' = :recordId LIMIT 100'; 
+                                   ' WHERE ' + relationshipFieldNameOnChild + ' = :recordId LIMIT ' + MAX_RELATED_RECORDS_PER_OBJECT; 
                 
-                System.debug('Querying related records for ' + childObjectName + ': ' + childSoql);
                 List<SObject> relatedSObjects = Database.query(childSoql);
                 
                 if (!relatedSObjects.isEmpty()) {
@@ -421,16 +589,52 @@ public with sharing class RecordContextController {
                     }
                     relatedRecordsMap.put(relatedListLabel, recordsList); 
                     processedObjectTypesCount++;
-                    System.debug('Successfully queried ' + relatedSObjects.size() + ' ' + childObjectName + 
-                                 ' records using relationship field ' + relationshipFieldNameOnChild + '.');
                 }
             } catch (Exception e) {
-                System.debug(LoggingLevel.WARN, 'Error querying related records for ' + childObjectName + 
-                             ' using ' + relationshipFieldNameOnChild + ': ' + e.getMessage() + '\n' + e.getStackTraceString());
+                System.debug(LoggingLevel.WARN, 'Error querying related records for ' + childObjectName + ': ' + e.getMessage());
             }
         }
         
         return relatedRecordsMap;
+    }
+
+    /**
+     * Gets all accessible fields for a query, excluding system-generated fields.
+     * This method is used for the initial fetch of related records.
+     */
+    private static List<String> getAllNonSystemFieldsForQuery(Map<String, Schema.SObjectField> fieldMap) {
+        List<String> allFields = new List<String>();
+        Set<String> systemFieldsToExclude = new Set<String>{
+            'CreatedDate', 'LastModifiedDate', 'IsDeleted', 'SystemModstamp', 'OwnerId', 'LastActivityDate',
+            'LastViewedDate', 'LastReferencedDate', 'IsArchived', 'MasterRecordId', 'RecordTypeId'
+        }; // Add more system fields as needed
+
+        for (String fieldKey : fieldMap.keySet()) {
+            Schema.DescribeFieldResult fieldDesc = fieldMap.get(fieldKey).getDescribe();
+            String fieldName = fieldDesc.getName();
+
+            // Exclude system fields and inaccessible fields
+            if (fieldDesc.isAccessible() && 
+                !systemFieldsToExclude.contains(fieldName) &&
+                !fieldName.endsWith('__r') && // Exclude relationship fields (parent relationships)
+                !fieldName.contains('.') && // Exclude polymorphic fields like Owner.Name
+                fieldDesc.getSoapType() != Schema.SoapType.ADDRESS && 
+                fieldDesc.getSoapType() != Schema.SoapType.LOCATION) {
+                allFields.add(fieldName);
+            }
+        }
+        
+        // Ensure 'Id' is always included if not already present
+        if (!allFields.contains('Id')) {
+            allFields.add('Id');
+        }
+        
+        // Ensure 'Name' is always included if available and not already present
+        if (fieldMap.containsKey('Name') && fieldMap.get('Name').getDescribe().isAccessible() && !allFields.contains('Name')) {
+            allFields.add('Name');
+        }
+
+        return allFields;
     }
     
     private static final String ENDPOINT = 'https://ykb08pmg3l.execute-api.ap-south-1.amazonaws.com/default/SF-context-data';
@@ -441,17 +645,15 @@ public with sharing class RecordContextController {
         request.setMethod('POST');
         request.setHeader('Content-Type', 'application/json; charset=utf-8'); 
         
-        // Transform the record context to use human-readable field names
         Map<String, Object> transformedRecordContext = transformRecordContext(recordContext);
-        System.debug('//////////'+JSON.serialize(transformedRecordContext));
         
         Map<String, Object> requestBody = new Map<String, Object>();
-        String systemPrompt = 'Analyze the following Salesforce record details analyze and give answer to the user. ';
-        systemPrompt += 'Record Details:\n' + JSON.serialize(transformedRecordContext);
-        requestBody.put('prompt', systemPrompt + '\n\nUser Query: ' + prompt);
+        // Simplified system prompt to save tokens
+        String systemPrompt = 'Analyze this Salesforce record and answer the user query:\n' + JSON.serialize(transformedRecordContext);
+        requestBody.put('prompt', systemPrompt + '\n\nQuery: ' + prompt);
         requestBody.put('recordContext', transformedRecordContext);
+        
         String serializedBody = JSON.serialize(requestBody);
-        System.debug('Request Body for Lambda (first 1000 chars): ' + (serializedBody.length() > 1000 ? serializedBody.substring(0, 1000) + '...' : serializedBody));
         request.setBody(serializedBody);
         request.setTimeout(60000); 
         
@@ -460,22 +662,19 @@ public with sharing class RecordContextController {
         
         try {
             response = http.send(request);
-            System.debug('Lambda call status: ' + response.getStatusCode() + ' - ' + response.getStatus());
-            System.debug('Lambda response body (first 500 chars): ' + (response.getBody() != null ? response.getBody().substring(0, Math.min(response.getBody().length(), 500)) : 'null'));
             return response;
         } catch (Exception e) {
-            System.debug(LoggingLevel.ERROR, 'Error calling AWS Lambda: ' + e.getMessage() + '\n' + e.getStackTraceString());
+            System.debug(LoggingLevel.ERROR, 'Error calling AWS Lambda: ' + e.getMessage());
             throw new AuraHandledException('Failed to communicate with the AI service: ' + e.getMessage());
         }
     }
     
-   public static String getResponseBody(String prompt, Map<String, Object> recordContext) {
+    public static String getResponseBody(String prompt, Map<String, Object> recordContext) {
         try {
             HttpResponse response = callLambdaFunction(prompt, recordContext);
             
             if (response.getStatusCode() != 200) {
-                System.debug('API request failed. Status: ' + response.getStatus() + ', Code: ' + response.getStatusCode() + ', Body: ' + response.getBody());
-                throw new AuraHandledException('AI service request failed: ' + response.getStatus() + ' (Code: ' + response.getStatusCode() + ')');
+                throw new AuraHandledException('AI service request failed: ' + response.getStatus());
             }
             
             String responseBody = response.getBody();
@@ -483,40 +682,26 @@ public with sharing class RecordContextController {
                 throw new AuraHandledException('AI service returned an empty response.');
             }
 
-            // Corrected deserialization - Fixed the casting issue
             Map<String, Object> responseMap = (Map<String, Object>) JSON.deserializeUntyped(responseBody);
             
             if (!responseMap.containsKey('data')) {
-                 System.debug('Invalid API response structure. "data" key missing. Response: ' + responseBody);
-                throw new AuraHandledException('Invalid AI service response structure (missing "data").');
+                throw new AuraHandledException('Invalid AI service response structure.');
             }
             
-            Object dataObject = responseMap.get('data');
-            if (!(dataObject instanceof Map<String, Object>)) { // Fixed the instanceof check
-                 System.debug('Invalid API response structure. "data" is not a map. Response: ' + responseBody);
-                throw new AuraHandledException('Invalid AI service response structure ("data" not a map).');
-            }
-            Map<String, Object> data = (Map<String, Object>) dataObject; // This cast is now safe
+            Map<String, Object> data = (Map<String, Object>) responseMap.get('data');
             
             if (!data.containsKey('aiResponse')) {
-                System.debug('Invalid API response structure. "aiResponse" key missing in data. Response: ' + responseBody);
-                throw new AuraHandledException('Invalid AI service response structure (missing "aiResponse").');
+                throw new AuraHandledException('Invalid AI service response structure.');
             }
 
-            Object aiResponseObject = data.get('aiResponse');
-            if(!(aiResponseObject instanceof String)){
-                 System.debug('Invalid API response structure. "aiResponse" is not a String. Response: ' + responseBody);
-                throw new AuraHandledException('Invalid AI service response ("aiResponse" not text).');
-            }
-            String aiResponse = (String) aiResponseObject;
+            String aiResponse = (String) data.get('aiResponse');
             
-            // Clean up the response
             return aiResponse.replaceAll('\n', ' ').replaceAll('\"', '').trim();
             
         } catch (AuraHandledException e) { 
             throw e;
         } catch (Exception e) {
-            System.debug(LoggingLevel.ERROR, 'Error processing AI service response: ' + e.getMessage() + '\n' + e.getStackTraceString());
+            System.debug(LoggingLevel.ERROR, 'Error processing AI service response: ' + e.getMessage());
             throw new AuraHandledException('Error processing AI response: ' + e.getMessage());
         }
     }
