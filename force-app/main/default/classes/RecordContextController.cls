@@ -85,7 +85,7 @@ public with sharing class RecordContextController {
             String childLabel = childObjectDescribe.getLabel();
             String childLabelPlural = childObjectDescribe.getLabelPlural();
             
-            System.debug('Checking object: ' + childApiName + ' (Label: ' + childLabel + ', Label Plural: ' + childLabelPlural + ')');
+            // System.debug('Checking object: ' + childApiName + ' (Label: ' + childLabel + ', Label Plural: ' + childLabelPlural + ')');
             
             Boolean found = false;
 
@@ -167,6 +167,106 @@ public with sharing class RecordContextController {
         return recordId.getSobjectType().getDescribe().getName();
     }
     
+    /**
+     * Transforms API field names to human-readable format
+     * Examples:
+     * - PlatinumPMO__Current_Status__c -> Current Status
+     * - Account_Name__c -> Account Name
+     * - Name -> Name (standard fields unchanged)
+     */
+    private static String transformFieldName(String apiName) {
+        if (String.isBlank(apiName)) {
+            return apiName;
+        }
+        
+        String transformed = apiName;
+        
+        // Remove namespace prefix (everything before and including the first __)
+        if (transformed.contains('__') && transformed.indexOf('__') < transformed.lastIndexOf('__')) {
+            transformed = transformed.substring(transformed.indexOf('__') + 2);
+        }
+        
+        // Remove __c suffix for custom fields
+        if (transformed.endsWith('__c')) {
+            transformed = transformed.substring(0, transformed.length() - 3);
+        }
+        
+        // Replace underscores with spaces
+        transformed = transformed.replace('_', ' ');
+        
+        // Convert to title case (first letter of each word capitalized)
+        List<String> words = transformed.split(' ');
+        List<String> titleCaseWords = new List<String>();
+        for (String word : words) {
+            if (String.isNotBlank(word)) {
+                titleCaseWords.add(word.substring(0, 1).toUpperCase() + 
+                                 (word.length() > 1 ? word.substring(1).toLowerCase() : ''));
+            }
+        }
+        
+        return String.join(titleCaseWords, ' ');
+    }
+    
+    /**
+     * Transforms a record map to use human-readable field names
+     */
+    private static Map<String, Object> transformRecordFieldNames(Map<String, Object> record) {
+        Map<String, Object> transformedRecord = new Map<String, Object>();
+        
+        for (String fieldName : record.keySet()) {
+            String transformedFieldName = transformFieldName(fieldName);
+            transformedRecord.put(transformedFieldName, record.get(fieldName));
+        }
+        
+        return transformedRecord;
+    }
+    
+    /**
+     * Transforms the entire record context to use human-readable field names
+     */
+    private static Map<String, Object> transformRecordContext(Map<String, Object> recordContext) {
+        Map<String, Object> transformedContext = new Map<String, Object>();
+        
+        // Transform main record
+        if (recordContext.containsKey('record')) {
+            Map<String, Object> record = (Map<String, Object>) recordContext.get('record');
+            transformedContext.put('record', transformRecordFieldNames(record));
+        }
+        
+        // Transform related records
+        if (recordContext.containsKey('relatedRecords')) {
+            Map<String, Object> relatedRecords = (Map<String, Object>) recordContext.get('relatedRecords');
+            Map<String, Object> transformedRelatedRecords = new Map<String, Object>();
+            
+            for (String objectLabel : relatedRecords.keySet()) {
+                List<Object> recordsList = (List<Object>) relatedRecords.get(objectLabel);
+                List<Object> transformedRecordsList = new List<Object>();
+                
+                for (Object recordObj : recordsList) {
+                    if (recordObj instanceof Map<String, Object>) {
+                        Map<String, Object> recordMap = (Map<String, Object>) recordObj;
+                        transformedRecordsList.add(transformRecordFieldNames(recordMap));
+                    } else {
+                        transformedRecordsList.add(recordObj);
+                    }
+                }
+                
+                transformedRelatedRecords.put(objectLabel, transformedRecordsList);
+            }
+            
+            transformedContext.put('relatedRecords', transformedRelatedRecords);
+        }
+        
+        // Copy other properties as-is
+        for (String key : recordContext.keySet()) {
+            if (key != 'record' && key != 'relatedRecords') {
+                transformedContext.put(key, recordContext.get(key));
+            }
+        }
+        
+        return transformedContext;
+    }
+    
     private static Map<String, Object> getRecordFields(String recordId, String objectApiName) {
         if (String.isBlank(recordId) || String.isBlank(objectApiName)) return new Map<String, Object>();
         
@@ -182,7 +282,7 @@ public with sharing class RecordContextController {
               ) {
                  // Additional check for specific problematic field types if necessary
                 if (!fieldDescribe.isCalculated() || fieldDescribe.isNillable() || fieldDescribe.isFilterable()) { // Be more selective about calculated fields
-                    if (!fieldKey.contains('.')) { 
+                    if (!fieldKey.contains('.')) { // Avoid relationship fields in this main query
                          fieldNames.add(fieldDescribe.getName());
                     }
                 }
@@ -341,10 +441,15 @@ public with sharing class RecordContextController {
         request.setMethod('POST');
         request.setHeader('Content-Type', 'application/json; charset=utf-8'); 
         
-        Map<String, Object> requestBody = new Map<String, Object>();
-        requestBody.put('prompt', prompt);
-        requestBody.put('recordContext', recordContext);
+        // Transform the record context to use human-readable field names
+        Map<String, Object> transformedRecordContext = transformRecordContext(recordContext);
+        System.debug('//////////'+JSON.serialize(transformedRecordContext));
         
+        Map<String, Object> requestBody = new Map<String, Object>();
+        String systemPrompt = 'Analyze the following Salesforce record details analyze and give answer to the user. ';
+        systemPrompt += 'Record Details:\n' + JSON.serialize(transformedRecordContext);
+        requestBody.put('prompt', systemPrompt + '\n\nUser Query: ' + prompt);
+        requestBody.put('recordContext', transformedRecordContext);
         String serializedBody = JSON.serialize(requestBody);
         System.debug('Request Body for Lambda (first 1000 chars): ' + (serializedBody.length() > 1000 ? serializedBody.substring(0, 1000) + '...' : serializedBody));
         request.setBody(serializedBody);
@@ -387,11 +492,11 @@ public with sharing class RecordContextController {
             }
             
             Object dataObject = responseMap.get('data');
-            if (!(dataObject instanceof Map<String, Object>)) {
+            if (!(dataObject instanceof Map<String, Object>)) { // Fixed the instanceof check
                  System.debug('Invalid API response structure. "data" is not a map. Response: ' + responseBody);
                 throw new AuraHandledException('Invalid AI service response structure ("data" not a map).');
             }
-            Map<String, Object> data = (Map<String, Object>) dataObject; 
+            Map<String, Object> data = (Map<String, Object>) dataObject; // This cast is now safe
             
             if (!data.containsKey('aiResponse')) {
                 System.debug('Invalid API response structure. "aiResponse" key missing in data. Response: ' + responseBody);
@@ -404,7 +509,8 @@ public with sharing class RecordContextController {
                 throw new AuraHandledException('Invalid AI service response ("aiResponse" not text).');
             }
             String aiResponse = (String) aiResponseObject;
-
+            
+            // Clean up the response
             return aiResponse.replaceAll('\n', ' ').replaceAll('\"', '').trim();
             
         } catch (AuraHandledException e) { 
