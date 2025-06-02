@@ -85,8 +85,8 @@ public class S3CustomObjectExportQueueable implements Queueable, Database.Allows
             String fileName = objectType + '_' + System.now().getTime() + '.json';
             String s3Path = 'salesforce-exports/' + fileName;
             
-            // Get object data with related records
-            Map<String, Object> objectData = getObjectDataWithRelated(objectType);
+            // Get object data (simplified - no related records)
+            Map<String, Object> objectData = getObjectData(objectType);
             
             // Prepare metadata
             Map<String, String> metadata = new Map<String, String>{
@@ -136,7 +136,7 @@ public class S3CustomObjectExportQueueable implements Queueable, Database.Allows
         }
     }
     
-    private Map<String, Object> getObjectDataWithRelated(String objectType) {
+    private Map<String, Object> getObjectData(String objectType) {
         Map<String, Object> result = new Map<String, Object>();
         
         try {
@@ -148,7 +148,7 @@ public class S3CustomObjectExportQueueable implements Queueable, Database.Allows
             
             Schema.DescribeSObjectResult objectDescribe = sObjectType.getDescribe();
             
-            // Build dynamic SOQL query for main object
+            // Build dynamic SOQL query for main object only
             Set<String> fieldNames = new Set<String>();
             Map<String, Schema.SObjectField> fieldsMap = objectDescribe.fields.getMap();
             
@@ -171,16 +171,10 @@ public class S3CustomObjectExportQueueable implements Queueable, Database.Allows
             for (SObject record : records) {
                 Map<String, Object> recordMap = new Map<String, Object>();
                 
-                // Add main object fields
+                // Add all accessible fields
                 for (String fieldName : fieldNames) {
                     Object fieldValue = record.get(fieldName);
                     recordMap.put(fieldName, fieldValue);
-                }
-                
-                // Get related records (child relationships)
-                Map<String, List<Map<String, Object>>> relatedRecords = getRelatedRecords(record.Id, objectDescribe);
-                if (!relatedRecords.isEmpty()) {
-                    recordMap.put('RelatedRecords', relatedRecords);
                 }
                 
                 serializedRecords.add(recordMap);
@@ -201,52 +195,6 @@ public class S3CustomObjectExportQueueable implements Queueable, Database.Allows
         }
         
         return result;
-    }
-    
-    private Map<String, List<Map<String, Object>>> getRelatedRecords(Id recordId, Schema.DescribeSObjectResult objectDescribe) {
-        Map<String, List<Map<String, Object>>> relatedRecords = new Map<String, List<Map<String, Object>>>();
-        
-        try {
-            // Get child relationships
-            List<Schema.ChildRelationship> childRelationships = objectDescribe.getChildRelationships();
-            
-            for (Schema.ChildRelationship childRel : childRelationships) {
-                if (childRel.getRelationshipName() != null && 
-                    childRel.getChildSObject().getDescribe().isAccessible()) {
-                    
-                    String childObjectType = String.valueOf(childRel.getChildSObject());
-                    String relationshipField = String.valueOf(childRel.getField());
-                    
-                    // Limit related records to prevent performance issues
-                    String relatedQuery = 'SELECT Id, Name FROM ' + childObjectType + 
-                                        ' WHERE ' + relationshipField + ' = :recordId LIMIT 10';
-                    
-                    try {
-                        List<SObject> relatedSObjects = Database.query(relatedQuery);
-                        if (!relatedSObjects.isEmpty()) {
-                            List<Map<String, Object>> relatedList = new List<Map<String, Object>>();
-                            
-                            for (SObject relatedRecord : relatedSObjects) {
-                                Map<String, Object> relatedMap = new Map<String, Object>();
-                                relatedMap.put('Id', relatedRecord.Id);
-                                if (relatedRecord.get('Name') != null) {
-                                    relatedMap.put('Name', relatedRecord.get('Name'));
-                                }
-                                relatedList.add(relatedMap);
-                            }
-                            
-                            relatedRecords.put(childRel.getRelationshipName(), relatedList);
-                        }
-                    } catch (Exception relEx) {
-                        System.debug('Error querying related records for ' + childObjectType + ': ' + relEx.getMessage());
-                    }
-                }
-            }
-        } catch (Exception e) {
-            System.debug('Error getting related records: ' + e.getMessage());
-        }
-        
-        return relatedRecords;
     }
     
     private Map<String, Object> getObjectMetadata(Schema.DescribeSObjectResult objectDescribe) {
