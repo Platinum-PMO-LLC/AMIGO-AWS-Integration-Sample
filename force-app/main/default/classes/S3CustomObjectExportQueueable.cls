@@ -35,7 +35,7 @@ public class S3CustomObjectExportQueueable implements Queueable, Database.Allows
         try {
             if (currentIndex >= objectTypes.size()) {
                 // All objects processed, create summary file
-                createExportSummary();
+                // createExportSummary();
                 return;
             }
             
@@ -55,10 +55,8 @@ public class S3CustomObjectExportQueueable implements Queueable, Database.Allows
                     exportMetadata
                 );
                 System.enqueueJob(nextJob);
-            } else {
-                // This was the last object, create summary
-                createExportSummary();
-            }
+            } 
+            
             
         } catch (Exception e) {
             System.debug('Error in S3CustomObjectExportQueueable: ' + e.getMessage());
@@ -245,47 +243,47 @@ public class S3CustomObjectExportQueueable implements Queueable, Database.Allows
         */
     }
     
-    private void createExportSummary() {
-        try {
-            String fileName = 'export_summary_' + System.now().getTime() + '.json';
-            String s3Path = 'salesforce-exports/summaries/' + fileName;
+    // private void createExportSummary() {
+    //     try {
+    //         String fileName = 'export_summary_' + System.now().getTime() + '.json';
+    //         String s3Path = 'salesforce-exports/summaries/' + fileName;
             
-            exportMetadata.put('exportEndTime', System.now());
-            exportMetadata.put('objectTypes', objectTypes);
+    //         exportMetadata.put('exportEndTime', System.now());
+    //         exportMetadata.put('objectTypes', objectTypes);
             
-            Map<String, Object> summaryData = new Map<String, Object>{
-                'exportSummary' => exportMetadata,
-                'processedObjects' => objectTypes,
-                'generatedAt' => System.now()
-            };
+    //         Map<String, Object> summaryData = new Map<String, Object>{
+    //             'exportSummary' => exportMetadata,
+    //             'processedObjects' => objectTypes,
+    //             'generatedAt' => System.now()
+    //         };
             
-            Map<String, String> metadata = new Map<String, String>{
-                'contentType' => 'summary',
-                'exportTime' => String.valueOf(System.now()),
-                'totalObjects' => String.valueOf(objectTypes.size())
-            };
+    //         Map<String, String> metadata = new Map<String, String>{
+    //             'contentType' => 'summary',
+    //             'exportTime' => String.valueOf(System.now()),
+    //             'totalObjects' => String.valueOf(objectTypes.size())
+    //         };
             
-            Map<String, Object> payload = new Map<String, Object>{
-                's3Bucket' => s3BucketName,
-                's3Key' => s3Path,
-                'content' => JSON.serialize(summaryData),
-                'metadata' => metadata
-            };
+    //         Map<String, Object> payload = new Map<String, Object>{
+    //             's3Bucket' => s3BucketName,
+    //             's3Key' => s3Path,
+    //             'content' => JSON.serialize(summaryData),
+    //             'metadata' => metadata
+    //         };
             
-            HttpRequest req = new HttpRequest();
-            req.setEndpoint(lambdaEndpoint);
-            req.setMethod('POST');
-            req.setHeader('Content-Type', 'application/json');
-            req.setBody(JSON.serialize(payload));
-            req.setTimeout(120000);
+    //         HttpRequest req = new HttpRequest();
+    //         req.setEndpoint(lambdaEndpoint);
+    //         req.setMethod('POST');
+    //         req.setHeader('Content-Type', 'application/json');
+    //         req.setBody(JSON.serialize(payload));
+    //         req.setTimeout(120000);
             
-            Http http = new Http();
-            HttpResponse res = http.send(req);
+    //         Http http = new Http();
+    //         HttpResponse res = http.send(req);
             
-            System.debug('Export summary created: ' + (res.getStatusCode() == 200 ? 'Success' : 'Failed'));
+    //         System.debug('Export summary created: ' + (res.getStatusCode() == 200 ? 'Success' : 'Failed'));
             
-        } catch (Exception e) {
-            System.debug('Error creating export summary: ' + e.getMessage());
-        }
-    }
+    //     } catch (Exception e) {
+    //         System.debug('Error creating export summary: ' + e.getMessage());
+    //     }
+    // }
 }

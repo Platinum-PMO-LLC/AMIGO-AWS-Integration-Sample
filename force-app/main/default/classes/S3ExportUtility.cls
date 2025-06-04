@@ -68,28 +68,6 @@ public class S3ExportUtility {
         return customObjects;
     }
     
-    // /**
-    //  * Get standard objects (optional - you can customize this list)
-    //  */
-    // public static List<String> getStandardObjects() {
-    //     return new List<String>{
-    //         'Account',
-    //         'Contact',
-    //         'Lead',
-    //         'Opportunity',
-    //         'Case',
-    //         'Task',
-    //         'Event',
-    //         'User',
-    //         'Product2',
-    //         'Pricebook2',
-    //         'PricebookEntry'
-    //     };
-    // }
-    
-    /**
-     * Export both standard and custom objects
-     */
     public static void exportAllObjects() {
         List<String> allObjects = new List<String>();
         // allObjects.addAll(getStandardObjects());
