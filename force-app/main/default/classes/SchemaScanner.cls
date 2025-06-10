@@ -1,19 +1,16 @@
 public with sharing class SchemaScanner {
    
     // Main method to generate complete schema JSON
-    // @AuraEnabled
-    // public static String generateFullSchemaJSON() {
-    //     Map<String, Object> schema = new Map<String, Object>{
-    //         'metadata' => getMetadata(),
-    //         'objects' => getAllObjectsMetadata(),
-    //         'relationship_rules' => getRelationshipRules()
-    //     };
-        
-    //     // Serialize without escape characters
-    //     String schemaJSON = JSON.serialize(schema);
-    //     System.debug(schemaJSON);
-    //     return JSON.serialize(schema);
-    // }
+    @AuraEnabled
+    public static string generateFullSchemaJSON(String schemaJSON) {
+        try {
+            String storeJson;
+            storeJson = schemaJSON;
+            return storeJson;
+        } catch (Exception e) {
+            throw new AuraHandledException(e.getMessage());
+        }
+    }
     
     // Get metadata about the schema itself
     public static Map<String, Object> getMetadata() {
@@ -37,12 +34,6 @@ public with sharing class SchemaScanner {
             if (objectName.endsWith('__c')) {
                 Schema.DescribeSObjectResult objDescribe = globalDescribe.get(objectName).getDescribe();
                 objectsMap.put(objectName, getObjectMetadata(objDescribe));
-                count++;
-                
-                // Break the loop after processing 5 objects
-                if (count >= 5) {
-                    break;
-                }
             }
         }
         
