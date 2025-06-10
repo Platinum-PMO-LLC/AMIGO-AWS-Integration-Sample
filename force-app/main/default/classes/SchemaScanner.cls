@@ -1,19 +1,19 @@
 public with sharing class SchemaScanner {
    
     // Main method to generate complete schema JSON
-    @AuraEnabled
-    public static String generateFullSchemaJSON() {
-        Map<String, Object> schema = new Map<String, Object>{
-            'metadata' => getMetadata(),
-            'objects' => getAllObjectsMetadata(),
-            'relationship_rules' => getRelationshipRules()
-        };
+    // @AuraEnabled
+    // public static String generateFullSchemaJSON() {
+    //     Map<String, Object> schema = new Map<String, Object>{
+    //         'metadata' => getMetadata(),
+    //         'objects' => getAllObjectsMetadata(),
+    //         'relationship_rules' => getRelationshipRules()
+    //     };
         
-        // Serialize without escape characters
-        String schemaJSON = JSON.serialize(schema);
-        System.debug(schemaJSON);
-        return JSON.serialize(schema);
-    }
+    //     // Serialize without escape characters
+    //     String schemaJSON = JSON.serialize(schema);
+    //     System.debug(schemaJSON);
+    //     return JSON.serialize(schema);
+    // }
     
     // Get metadata about the schema itself
     public static Map<String, Object> getMetadata() {
