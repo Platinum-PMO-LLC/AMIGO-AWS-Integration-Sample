@@ -31,7 +31,16 @@ public with sharing class SchemaScannerBatch implements Database.Batchable<Strin
         };
 
         String schemaJSON = JSON.serialize(schema);
+        exportSchemaAsync(schemaJSON);
         System.debug('Schema metadata saved successfully.' + schemaJSON);
+    }
+    // @future(callout=true)
+    public static void exportSchemaAsync(String schemaJSON) {
+        try {
+            S3ExportUtility.exportSchemaToS3(schemaJSON);
+        } catch (Exception e) {
+            System.debug('Error in async export: ' + e.getMessage());
+        }
     }
 
     private Map<String, Object> mergeAllObjects(List<Map<String, Object>> metadataList) {

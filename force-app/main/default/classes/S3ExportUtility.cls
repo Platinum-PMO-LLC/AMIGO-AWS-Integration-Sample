@@ -34,6 +34,7 @@ public class S3ExportUtility {
         System.enqueueJob(exportJob);
         System.debug('S3 export job enqueued successfully');
     }
+    @future(callout=true)
     public static void exportSchemaToS3(String schemaJSON) {
         try {
             // Generate filename with timestamp
