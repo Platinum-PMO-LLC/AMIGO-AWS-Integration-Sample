@@ -80,7 +80,7 @@ public class S3CustomObjectExportQueueable implements Queueable, Database.Allows
     private void exportObjectToS3(String objectType) {
         try {
             // Generate filename
-            String fileName = objectType + '_' + System.now().getTime() + '.json';
+            String fileName = objectType + '_' + '.json';
             String s3Path = 'salesforce-exports/' + fileName;
             
             // Get object data (simplified - no related records)
