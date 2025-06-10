@@ -34,12 +34,12 @@ public class S3ExportUtility {
         System.enqueueJob(exportJob);
         System.debug('S3 export job enqueued successfully');
     }
-    @future(callout=true)
+
     public static void exportSchemaToS3(String schemaJSON) {
         try {
             // Generate filename with timestamp
             String fileName = 'Schema_' + Datetime.now().format('yyyyMMdd_HHmmss') + '.json';
-            String s3Path = 'salesforce-exports/Schema Object/' + fileName;
+            String s3Path = 'salesforce-exports/Schema-Object/' + fileName;
             
             // Prepare metadata
             Map<String, String> metadata = new Map<String, String>{
