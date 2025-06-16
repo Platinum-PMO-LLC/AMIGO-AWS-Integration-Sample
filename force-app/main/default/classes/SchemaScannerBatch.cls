@@ -57,52 +57,5 @@ public with sharing class SchemaScannerBatch implements Database.Batchable<Strin
         public void execute(QueueableContext context) {
             S3ExportUtility.exportSchemaToS3(this.schemaJSON);
         }
-
-        // private void exportSchemaToS3(String schemaJSON) {
-        //     try {
-        //         // Generate filename with timestamp
-        //         String fileName = 'Schema_' + Datetime.now().format('yyyyMMdd_HHmmss') + '.json';
-        //         String s3Path = 'salesforce-exports/Schema-Object/' + fileName;
-                
-        //         // Prepare metadata
-        //         Map<String, String> metadata = new Map<String, String>{
-        //             'exportTime' => String.valueOf(System.now()),
-        //             'salesforceOrg' => UserInfo.getOrganizationId(),
-        //             'exportedBy' => UserInfo.getUserId()
-        //         };
-                
-        //         // Prepare request payload for Lambda
-        //         Map<String, Object> payload = new Map<String, Object>{
-        //             's3Bucket' => DEFAULT_S3_BUCKET,
-        //             's3Key' => s3Path,
-        //             'content' => schemaJSON,
-        //             'metadata' => metadata
-        //         };
-                
-        //         // Send to Lambda
-        //         HttpRequest req = new HttpRequest();
-        //         req.setEndpoint(DEFAULT_LAMBDA_ENDPOINT);
-        //         req.setMethod('POST');
-        //         req.setHeader('Content-Type', 'application/json');
-        //         req.setBody(JSON.serialize(payload));
-        //         req.setTimeout(120000);
-                
-        //         Http http = new Http();
-        //         HttpResponse res = http.send(req);
-                
-        //         if (res.getStatusCode() == 200) {
-        //             System.debug('Successfully exported schema to S3: ' + s3Path);
-        //             Map<String, Object> responseData = (Map<String, Object>) JSON.deserializeUntyped(res.getBody());
-        //             System.debug('SUCCESS - Exported schema with ETag: ' + responseData.get('etag'));
-        //         } else {
-        //             System.debug('Failed to export schema. Status: ' + res.getStatusCode() + ', Body: ' + res.getBody());
-        //             throw new CalloutException('Lambda returned status: ' + res.getStatusCode());
-        //         }
-                
-        //     } catch (Exception e) {
-        //         System.debug('Error exporting schema: ' + e.getMessage());
-        //         System.debug('Stack trace: ' + e.getStackTraceString());
-        //     }
-        // }
     }
 }
