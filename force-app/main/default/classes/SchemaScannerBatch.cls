@@ -1,8 +1,6 @@
 public with sharing class SchemaScannerBatch implements Database.Batchable<String>, Database.Stateful {
 
     private List<Map<String, Object>> batchObjectMetadata = new List<Map<String, Object>>();
-    private static final String DEFAULT_LAMBDA_ENDPOINT = 'https://9dvpq2fd45.execute-api.ap-south-1.amazonaws.com/default/UploadSFDataToS3';
-    private static final String DEFAULT_S3_BUCKET = 'amigo-v-27-knowledge-base';
     
     public Iterable<String> start(Database.BatchableContext bc) {
         // Collect custom object API names
