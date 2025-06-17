@@ -12,7 +12,7 @@ public class S3CalloutService {
             // Prepare request 
             HttpRequest request = new HttpRequest(); 
             request.setMethod('PUT'); 
-            request.setEndpoint('callout:AWS_S3/'+'salesforce_exports/'+ fileName); 
+            request.setEndpoint('callout:AWS_S3/'+'salesforce-exports/'+ fileName); 
             request.setBody(content); 
             request.setHeader('Content-Type', contentType); 
             request.setTimeout(Integer.valueOf(60000)); 
