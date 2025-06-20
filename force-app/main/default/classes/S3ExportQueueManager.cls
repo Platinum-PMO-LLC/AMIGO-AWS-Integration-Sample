@@ -49,4 +49,17 @@ public with sharing class S3ExportQueueManager {
         
         update queueItem;
     }
+
+    public String getCronExpression(Integer minutesFromNow) {
+        DateTime nextRun = System.now().addMinutes(minutesFromNow);
+        Integer seconds = nextRun.second();
+        Integer minutes = nextRun.minute();
+        Integer hours = nextRun.hour();
+        Integer day = nextRun.day();
+        Integer month = nextRun.month();
+        Integer year = nextRun.year();
+        
+        return seconds + ' ' + minutes + ' ' + hours + ' ' + day + ' ' + month + ' ? ' + year;
+    }
+    
 }
