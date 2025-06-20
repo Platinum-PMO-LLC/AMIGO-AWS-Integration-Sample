@@ -3,7 +3,7 @@ global class S3ExportScheduler implements Schedulable {
     private Integer batchSize;
     
     global S3ExportScheduler() {
-        this.batchSize = 3; // Process 3 objects concurrently
+        this.batchSize = 5; 
     }
     
     global S3ExportScheduler(Integer batchSize) {
@@ -59,21 +59,10 @@ global class S3ExportScheduler implements Schedulable {
         if(remainingCount > 0) {
             // Schedule next run in 30 minutes
             String jobName = 'S3Export_' + System.now().getTime();
-            String cronExp = getCronExpression(30); // 30 minutes from now
+            String cronExp = S3ExportQueueManager.getCronExpression(1);
             
             System.schedule(jobName, cronExp, new S3ExportScheduler(batchSize));
         }
     }
-    
-    private String getCronExpression(Integer minutesFromNow) {
-        DateTime nextRun = System.now().addMinutes(minutesFromNow);
-        Integer seconds = nextRun.second();
-        Integer minutes = nextRun.minute();
-        Integer hours = nextRun.hour();
-        Integer day = nextRun.day();
-        Integer month = nextRun.month();
-        Integer year = nextRun.year();
-        
-        return seconds + ' ' + minutes + ' ' + hours + ' ' + day + ' ' + month + ' ? ' + year;
-    }
+
 }
